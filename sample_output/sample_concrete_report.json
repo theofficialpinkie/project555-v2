@@ -1,0 +1,152 @@
+{
+  "file": "555 items_Errors_DataSet 4_6-19-26(1).pdf",
+  "keyword": "concrete",
+  "total_flagged_callouts": 3,
+  "pages": [
+    {
+      "page": 1,
+      "sheet_title": "TRUNKLINE OVER EBSS - CROSSING 1 / GENERAL PLAN AND ELEVATION",
+      "drawing_titles": [
+        "EBSS CROSSING 1 - PLAN VIEW",
+        "EBSS CROSSING 1 - ELEVATION VIEW"
+      ],
+      "flagged_callouts": []
+    },
+    {
+      "page": 2,
+      "sheet_title": "TRUNK LINE OVER EBSS - CROSSING 1 / REINFORCEMENT DETAILS",
+      "drawing_titles": [
+        "DRAINAGE TRUNK LINE - EBSS CROSSING 1 TOP SLAB PLAN VIEW",
+        "DRAINAGE TRUNK LINE - EBSS CROSSING 1 BOTTOM SLAB PLAN VIEW",
+        "DRAINAGE TRUNK LINE - EBSS CROSSING 1 ELEVATION VIEW",
+        "DRAINAGE TRUNK LINE - EBSS CROSSING 1 SECTION A-A"
+      ],
+      "flagged_callouts": []
+    },
+    {
+      "page": 3,
+      "sheet_title": "TRUNK LINE OVER EBSS / DETAILS / SHEET 1 OF 4",
+      "drawing_titles": [
+        "EBSS CROSSING 1 SECTION A - OUTSIDE DRAINAGE TRUNK LINE LIMITS",
+        "EBSS CROSSING 1 SECTION B - INSIDE DRAINAGE TRUNK LINE LIMITS",
+        "EBSS CORNER DETAIL",
+        "EBSS CORNER DETAIL",
+        "EBSS CROSSING 1 - LONGITUDINAL EBSS SECTION"
+      ],
+      "flagged_callouts": []
+    },
+    {
+      "page": 4,
+      "sheet_title": "TRUNK LINE OVER EBSS / DETAILS / SHEET 2 OF 4",
+      "drawing_titles": [
+        "DRAINAGE TRUNK LINE EBSS CROSSING 1 - PILE CAP PLAN",
+        "DRAINAGE TRUNK LINE EBSS CROSSING 2 - PILE CAP PLAN",
+        "DRAINAGE TRUNK LINE EBSS CROSSING 1 - PILE CAP ELEVATION",
+        "DRAINAGE TRUNK LINE EBSS CROSSING 2 - PILE CAP ELEVATION",
+        "DRAINAGE TRUNK LINE EBSS CROSSING 1 - PILE CAP - SECTION A-A",
+        "DRAINAGE TRUNK LINE EBSS CROSSING 2 - PILE CAP - SECTION B-B"
+      ],
+      "flagged_callouts": []
+    },
+    {
+      "page": 5,
+      "sheet_title": "TRUNK LINE OVER EBSS / DETAILS / SHEET 3 OF 4",
+      "drawing_titles": [
+        "PLAN",
+        "TYPICAL PIER ELEVATION",
+        "DRAINAGE TRUNK LINE COLLAR - PLAN",
+        "DRAINAGE TRUNK LINE COLLAR - SECTION",
+        "SECTION C-C",
+        "CROSSING 1",
+        "PLAIN ELASTOMERIC BEARING (TYPE E.P.) TABLE",
+        "DRAINAGE TRUNK LINE JOINT - DETAIL",
+        "CROSSING 2",
+        "PLAIN ELASTOMERIC BEARING (TYPE E.P.) TABLE"
+      ],
+      "flagged_callouts": [
+        {
+          "text": "CONCRETE COLLAR",
+          "bbox": [
+            880.3717041015625,
+            71.78089141845703,
+            931.2921752929688,
+            77.80123138427734
+          ],
+          "bbox_norm": [
+            0.7193,
+            0.0906,
+            0.7609,
+            0.0982
+          ],
+          "keyword_boxes": [
+            [
+              880.37,
+              71.78,
+              908.58,
+              77.8
+            ]
+          ]
+        },
+        {
+          "text": "CONCRETE COLLAR",
+          "bbox": [
+            948.5551147460938,
+            93.33582305908203,
+            999.4755859375,
+            99.35616302490234
+          ],
+          "bbox_norm": [
+            0.775,
+            0.1178,
+            0.8166,
+            0.1254
+          ],
+          "keyword_boxes": [
+            [
+              948.56,
+              93.34,
+              976.76,
+              99.36
+            ]
+          ]
+        },
+        {
+          "text": "12\" CONCRETE COLLAR",
+          "bbox": [
+            934.3383178710938,
+            454.4859924316406,
+            998.4710693359375,
+            460.50634765625
+          ],
+          "bbox_norm": [
+            0.7633,
+            0.5738,
+            0.8157,
+            0.5814
+          ],
+          "keyword_boxes": [
+            [
+              943.84,
+              454.49,
+              974.1,
+              460.51
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page": 6,
+      "sheet_title": "TRUNK LINE OVER EBSS / DETAILS / SHEET 4 OF 4",
+      "drawing_titles": [
+        "MICROPILE SECTION A-A",
+        "DRAINAGE TRUNK LINE EBSS CROSSING 1 - PILE LAYOUT PLAN",
+        "MICROPILE SECTION B-B",
+        "TYPICAL MICROPILE ELEVATION",
+        "MICROPILE NOTES:",
+        "DRAINAGE TRUNK LINE EBSS CROSSING 2 - PILE LAYOUT PLAN"
+      ],
+      "flagged_callouts": []
+    }
+  ]
+}
