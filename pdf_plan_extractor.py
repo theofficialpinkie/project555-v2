@@ -85,6 +85,79 @@ METADATA_WORDS = (
 )
 
 
+# Concrete phrases that Carol identified as belonging to non-Item-555 work.
+# These rules apply only to a CONCRETE match; the other configured keywords
+# (grout, joint filler, wire fabric, etc.) remain independently reviewable.
+CONCRETE_NON_555_EXCLUSIONS = [
+    "Removal",
+    "Fill",
+    "Paved areas",
+    "Pavement",
+    "Paving",
+    "Asphalt",
+    "Disposal of",
+    "Cold milling",
+    "Cold mill",
+    "Portland",
+    "PCC",
+    "Precast",
+    "Sawing",
+    "Saw cut",
+    "Saw cutting",
+    "Piles",
+    "Pile",
+    "Shafts",
+    "Soldier pile and lagging",
+    "Reinforcing steel",
+    "Bar reinforcement",
+    "Approach",
+    "Slab",
+    "Deck",
+    "Reinforced",
+    "Polymer",
+    "Sidewalks",
+    "Sidewalk",
+    "Curb",
+    "Barrier",
+    "Fence",
+    "Prefabricated",
+    "Lightweight",
+    "Ultra-high performance",
+    "UHPC",
+    "Overlay",
+    "Joint header",
+    "Hybrid Composite Synthetic",
+    "HCSC",
+    "Painting",
+    "Sealing",
+    "Protective sealing",
+    "Coating",
+    "Sealer",
+    "Masonry",
+    "Apron",
+    "Prestressed",
+    "Post-tensioned",
+    "Elastomeric",
+    "Railing",
+    "Parapet",
+    "Replacement of",
+    "Friction surface",
+    "Pavers",
+    "Gutters",
+    "Impact Attenuator",
+    "Abandon",
+    "Pedestrian signal pole",
+    "Pullbox",
+]
+
+# An explicit Item 555 reference is stronger evidence than a nearby exclusion
+# term and therefore keeps the concrete mention in the flagged set.
+ITEM_555_RE = re.compile(
+    r"(?:\bITEM(?:\s+NO\.?)?\s*555(?:\.\d+)?\b|\b555\.\d+\b)",
+    re.I,
+)
+
+
 def clean_text(s: str) -> str:
     s = re.sub(r"\s+", " ", s or "").strip()
     return s.replace("ﬁ", "fi").replace("ﬂ", "fl")
@@ -121,39 +194,146 @@ def _edit_distance_at_most_one(left: str, right: str) -> bool:
     return True
 
 
-def _token_matches_keyword(token: str, keyword: str) -> bool:
-    """Match exact keywords plus a single PDF text-encoding/OCR error.
+def _token_match_quality(token: str, keyword: str) -> str | None:
+    """Return how a source token matches a configured keyword.
 
-    Engineering PDFs frequently render a complete word while the embedded text
-    omits one glyph. For example, the visible word ``CONCRETE`` in one test file
-    is exposed by PyMuPDF as ``CONCRET``. Limiting recovery to one edit avoids
-    broad substring matching and keeps false positives low.
+    In addition to exact and conservative PDF/OCR recovery, ``CONC.`` /
+    ``conc.`` are recognized as whole-word abbreviations for ``Concrete``.
+    The punctuation is stripped by normalization, so both forms resolve to
+    the token ``CONC``.
     """
     token_norm = _normalized_word(token)
     keyword_norm = _normalized_word(keyword)
     if not token_norm or not keyword_norm:
-        return False
+        return None
     if token_norm == keyword_norm:
-        return True
-    if len(keyword_norm) < 5 or len(token_norm) < len(keyword_norm) - 1:
-        return False
-    return _edit_distance_at_most_one(token_norm, keyword_norm)
+        return "exact"
+
+    # Engineering abbreviation. Keep it canonicalized under the Concrete
+    # keyword so Carol's non-Item-555 exclusions still apply.
+    if keyword_norm == "CONCRETE" and token_norm == "CONC":
+        return "recognized abbreviation CONC."
+
+    # Short construction terms such as GROUT can lose their final rendered
+    # glyph in the PDF text layer. Do not use general edit distance here: a
+    # strict trailing-glyph rule keeps accidental matches low.
+    if 5 <= len(keyword_norm) <= 6:
+        if (
+            keyword_norm[-1] != "S"
+            and len(token_norm) == len(keyword_norm) - 1
+            and keyword_norm.startswith(token_norm)
+        ):
+            return "recovered one-character text error"
+        return None
+
+    if len(keyword_norm) < 7 or len(token_norm) < len(keyword_norm) - 1:
+        return None
+    if _edit_distance_at_most_one(token_norm, keyword_norm):
+        return "recovered one-character text error"
+    return None
+
+
+def _token_matches_keyword(token: str, keyword: str) -> bool:
+    """Boolean wrapper around :func:`_token_match_quality`."""
+    return _token_match_quality(token, keyword) is not None
+
+
+def _keyword_tokens(value: str) -> list[str]:
+    return [
+        _normalized_word(token)
+        for token in re.findall(r"[A-Za-z0-9]+", value or "")
+        if _normalized_word(token)
+    ]
+
+
+def normalize_keywords(keywords: Iterable[str] | str) -> list[str]:
+    """Clean and deduplicate user-supplied keywords while preserving order."""
+    if isinstance(keywords, str):
+        raw = re.split(r"[\n,]+", keywords)
+    else:
+        raw = list(keywords)
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        cleaned = clean_text(str(value)).strip(" ,;")
+        key = cleaned.casefold()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        result.append(cleaned)
+    return result
 
 
 def _text_contains_keyword(text: str, keyword: str) -> bool:
-    return any(_token_matches_keyword(token, keyword) for token in re.findall(r"[A-Za-z0-9]+", text or ""))
+    text_tokens = _keyword_tokens(text)
+    keyword_tokens = _keyword_tokens(keyword)
+    if not keyword_tokens or len(text_tokens) < len(keyword_tokens):
+        return False
+    width = len(keyword_tokens)
+    for index in range(len(text_tokens) - width + 1):
+        if all(
+            _token_matches_keyword(text_tokens[index + offset], target)
+            for offset, target in enumerate(keyword_tokens)
+        ):
+            return True
+    return False
 
+
+
+
+def _concrete_exclusion_terms(text: str) -> list[str]:
+    """Return non-555 terms found in the local concrete callout context.
+
+    Matching is whole-word / whole-phrase and case-insensitive.  A narrow
+    prefix rule is used for ``abandon`` so it also catches ``abandoned``.
+    """
+    if ITEM_555_RE.search(text or ""):
+        return []
+
+    matches: list[str] = []
+    normalized = clean_text(text)
+    for phrase in CONCRETE_NON_555_EXCLUSIONS:
+        if phrase.casefold() == "abandon":
+            if re.search(r"\babandon(?:ed|ing|ment)?\b", normalized, re.I):
+                matches.append(phrase)
+            continue
+        if _text_contains_keyword(normalized, phrase):
+            matches.append(phrase)
+    return matches
+
+
+def _keyword_is_concrete(keyword: str) -> bool:
+    return _normalized_word(keyword) == "CONCRETE"
 
 def _repair_keyword_text(text: str, keyword: str) -> str:
-    """Replace a one-edit keyword token with the intended keyword for display."""
-    parts = re.split(r"([A-Za-z0-9]+)", text or "")
-    for index in range(1, len(parts), 2):
-        token = parts[index]
-        if not _token_matches_keyword(token, keyword):
+    """Repair one-character PDF/OCR errors inside a matched word or phrase."""
+    pieces = re.split(r"([A-Za-z0-9]+)", text or "")
+    token_positions = [index for index in range(1, len(pieces), 2)]
+    keyword_tokens = re.findall(r"[A-Za-z0-9]+", keyword or "")
+    if not keyword_tokens:
+        return clean_text(text)
+
+    for start_index in range(len(token_positions) - len(keyword_tokens) + 1):
+        positions = token_positions[start_index : start_index + len(keyword_tokens)]
+        source_tokens = [pieces[position] for position in positions]
+        if not all(
+            _token_matches_keyword(source, target)
+            for source, target in zip(source_tokens, keyword_tokens)
+        ):
             continue
-        replacement = keyword.upper() if token.isupper() else keyword
-        parts[index] = replacement
-    return clean_text("".join(parts)).replace(" ,", ",")
+        for position, source, target in zip(positions, source_tokens, keyword_tokens):
+            # CONC. is a valid abbreviation, not a damaged PDF token. Preserve
+            # the source wording in the report while mapping it to Concrete.
+            if _token_match_quality(source, target) == "recognized abbreviation CONC.":
+                continue
+            if source.isupper():
+                pieces[position] = target.upper()
+            elif source[:1].isupper():
+                pieces[position] = target.capitalize()
+            else:
+                pieces[position] = target.lower()
+        break
+    return clean_text("".join(pieces)).replace(" ,", ",")
 
 
 def _analysis_rect(page: fitz.Page) -> fitz.Rect:
@@ -271,58 +451,235 @@ def norm_box(box: list[float], width: float, height: float) -> list[float]:
     ]
 
 
-def extract_sheet_title(lines: list[dict[str, Any]], width: float, height: float) -> str | None:
-    """
-    Extract the title-block title from the lower-right title cell.
+def _title_line_box(line: dict[str, Any]) -> list[float]:
+    return line.get("display_bbox", line["bbox"])
 
-    NYSDOT sheets often use two lines, but some use three, e.g.:
-      TRUNK LINE OVER EBSS / DETAILS / SHEET 2 OF 4
+
+def _compact_label(text: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (text or "").upper())
+
+
+def _find_title_block_anchor(
+    lines: list[dict[str, Any]],
+    width: float,
+    height: float,
+    label: str,
+) -> dict[str, Any] | None:
+    target = _compact_label(label)
+    matches: list[dict[str, Any]] = []
+    for line in lines:
+        x0, y0, x1, y1 = _title_line_box(line)
+        if y0 < 0.82 * height or x0 < 0.55 * width:
+            continue
+        compact = _compact_label(line.get("text", ""))
+        if target in compact:
+            matches.append(line)
+    if not matches:
+        return None
+    # Prefer the rightmost match in the actual title block. This avoids an
+    # occasional note/table reference elsewhere along the bottom of the page.
+    return max(matches, key=lambda item: (_title_line_box(item)[0], _title_line_box(item)[1]))
+
+
+def _merge_title_baselines(
+    candidates: list[dict[str, Any]],
+    *,
+    height: float,
+) -> list[dict[str, Any]]:
+    """Deduplicate and merge title fragments that share the same baseline."""
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int, int, int]] = set()
+    for line in candidates:
+        box = _title_line_box(line)
+        key = (
+            clean_text(line.get("text", "")).upper(),
+            round(box[0]),
+            round(box[1]),
+            round(box[2]),
+            round(box[3]),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(line)
+
+    unique.sort(key=lambda item: (_title_line_box(item)[1], _title_line_box(item)[0]))
+    rows: list[list[dict[str, Any]]] = []
+    baseline_tolerance = max(2.5, 0.0045 * height)
+    for line in unique:
+        cy = (_title_line_box(line)[1] + _title_line_box(line)[3]) / 2
+        if rows:
+            row_cy = sum(
+                (_title_line_box(item)[1] + _title_line_box(item)[3]) / 2
+                for item in rows[-1]
+            ) / len(rows[-1])
+            if abs(cy - row_cy) <= baseline_tolerance:
+                rows[-1].append(line)
+                continue
+        rows.append([line])
+
+    merged: list[dict[str, Any]] = []
+    for row in rows:
+        row.sort(key=lambda item: _title_line_box(item)[0])
+        text = clean_text(" ".join(item["text"] for item in row))
+        boxes = [_title_line_box(item) for item in row]
+        merged.append(
+            {
+                "text": text,
+                "display_bbox": [
+                    min(box[0] for box in boxes),
+                    min(box[1] for box in boxes),
+                    max(box[2] for box in boxes),
+                    max(box[3] for box in boxes),
+                ],
+                "font_size": max(float(item.get("font_size", 0)) for item in row),
+            }
+        )
+    return merged
+
+
+def extract_sheet_title_info(
+    lines: list[dict[str, Any]], width: float, height: float
+) -> dict[str, Any]:
+    """Extract every line inside the lower-right sheet-title cell.
+
+    The reliable signal is the title-block geometry, not title wording or font
+    size. NYSDOT title cells can contain one to four stacked lines, for example:
+
+      CONC. DECK REPAIR TYPE CDR-3
+      BOTTOM OF DECK
+      OVERHEAD PATCHING/SPALL REPAIR
+
+    or:
+
+      GENERAL PLAN
+      LOCATION 2 - NY25A (NORTHERN BLVD)
+      AT COMMUNITY DRIVE
+
+    This routine anchors the cell using ALL DIMENSIONS, DRAWING NO., SHEET NO.,
+    and CONTRACT NUMBER labels. A normalized fallback handles imperfect OCR.
     """
+    all_dims = _find_title_block_anchor(lines, width, height, "ALL DIMENSIONS")
+    drawing_no = _find_title_block_anchor(lines, width, height, "DRAWING NO")
+    sheet_no = _find_title_block_anchor(lines, width, height, "SHEET NO")
+    contract_no = _find_title_block_anchor(lines, width, height, "CONTRACT NUMBER")
+
+    anchor_count = sum(anchor is not None for anchor in (all_dims, drawing_no, sheet_no, contract_no))
+    if drawing_no:
+        drawing_box = _title_line_box(drawing_no)
+        right = drawing_box[0] - max(2.0, 0.002 * width)
+    else:
+        right = 0.91 * width
+
+    if all_dims:
+        all_dims_box = _title_line_box(all_dims)
+        left = all_dims_box[0] - max(3.0, 0.003 * width)
+        top = all_dims_box[3] + max(1.0, 0.0015 * height)
+    else:
+        # Across the sample title blocks, the title cell occupies the band just
+        # left of DRAWING NO. and begins at roughly 78% of sheet width.
+        left = max(0.745 * width, right - 0.145 * width)
+        if contract_no:
+            top = _title_line_box(contract_no)[3] + max(1.0, 0.0015 * height)
+        else:
+            top = 0.884 * height
+
+    if sheet_no:
+        bottom = _title_line_box(sheet_no)[3] + max(4.0, 0.006 * height)
+    else:
+        bottom = 0.947 * height
+
+    # Guard against malformed OCR anchors.
+    left = max(0.70 * width, min(left, 0.82 * width))
+    right = max(left + 0.07 * width, min(right, 0.925 * width))
+    top = max(0.865 * height, min(top, 0.91 * height))
+    bottom = max(top + 0.025 * height, min(bottom, 0.955 * height))
+
     candidates: list[dict[str, Any]] = []
     for line in lines:
-        x0, y0, x1, _ = line.get("display_bbox", line["bbox"])
-        text = line["text"]
+        box = _title_line_box(line)
+        x0, y0, x1, y1 = box
+        cx = (x0 + x1) / 2
+        cy = (y0 + y1) / 2
+        text = clean_text(line.get("text", ""))
         upper = text.upper().strip(" :.")
+        compact = _compact_label(text)
 
-        # The title cell sits immediately left of DRAWING NO./SHEET NO. cells.
-        in_title_cell = (
-            x0 > 0.72 * width
-            and x1 < 0.915 * width
-            and 0.888 * height <= y0 <= 0.946 * height
-        )
-        if not in_title_cell:
+        if not (left <= cx <= right and top <= cy <= bottom):
+            continue
+        if not text or len(text) < 2:
+            continue
+        if any(
+            label in compact
+            for label in (
+                "ALLDIMENSIONS",
+                "DRAWINGNO",
+                "SHEETNO",
+                "CONTRACTNUMBER",
+            )
+        ):
             continue
         if upper in STOP_TITLE:
             continue
-        if re.match(r"^(D\d{6}|[A-Z]{1,4}\d*-\d+|\d+)$", upper):
-            continue
         if text.lower().endswith(".dgn"):
             continue
-        if any(word in upper for word in ("DRAWING NO", "SHEET NO", "CONTRACT NUMBER")):
+        if re.fullmatch(r"[0-9]+", text):
             continue
-        if len(text) < 4 or line["font_size"] < 6.2:
+        if re.fullmatch(r"D[0-9]{6}", upper):
+            continue
+        # Sheet/drawing codes belong in the adjacent cell, not the title cell.
+        if re.fullmatch(r"[A-Z]{1,5}[0-9]*-[A-Z0-9-]+", upper) and cx > right - 0.02 * width:
+            continue
+        # Small title lines are legitimate; 4 pt is common in title blocks.
+        if float(line.get("font_size", 0)) < 3.8:
             continue
         candidates.append(line)
 
-    # Keep the vertically contiguous title stack and preserve all 1-4 lines.
-    candidates.sort(
-        key=lambda item: (
-            item.get("display_bbox", item["bbox"])[1],
-            item.get("display_bbox", item["bbox"])[0],
-        )
-    )
-    title_lines: list[str] = []
-    last_y: float | None = None
-    for candidate in candidates:
-        y0 = candidate.get("display_bbox", candidate["bbox"])[1]
-        if last_y is not None and y0 - last_y > 17:
-            # A large vertical gap indicates a different cell/row.
-            title_lines = []
-        if candidate["text"] not in title_lines:
-            title_lines.append(candidate["text"])
-        last_y = y0
+    merged = _merge_title_baselines(candidates, height=height)
+    if not merged:
+        return {
+            "title": None,
+            "lines": [],
+            "bbox": None,
+            "source": "title_block_anchors" if anchor_count >= 2 else "normalized_fallback",
+            "confidence": "low",
+        }
 
-    return " / ".join(title_lines[-4:]) if title_lines else None
+    # Keep vertical order and remove exact repeated text caused by duplicated
+    # CAD text layers. Do not reset at larger gaps: the complete sheet title can
+    # legitimately contain a large first-to-second-line gap.
+    title_lines: list[str] = []
+    selected: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    for line in merged:
+        text = clean_text(line["text"])
+        key = text.upper()
+        if key in seen_text:
+            continue
+        seen_text.add(key)
+        title_lines.append(text)
+        selected.append(line)
+
+    boxes = [line["display_bbox"] for line in selected]
+    bbox = [
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    ]
+    confidence = "high" if anchor_count >= 3 else "medium" if anchor_count >= 1 else "low"
+    return {
+        "title": " / ".join(title_lines),
+        "lines": title_lines,
+        "bbox": bbox,
+        "source": "title_block_anchors" if anchor_count >= 2 else "normalized_fallback",
+        "confidence": confidence,
+    }
+
+
+def extract_sheet_title(lines: list[dict[str, Any]], width: float, height: float) -> str | None:
+    """Backward-compatible string-only sheet-title helper."""
+    return extract_sheet_title_info(lines, width, height)["title"]
 
 
 def collect_line_segments(page: fitz.Page) -> list[tuple[float, float, float, float, float]]:
@@ -524,7 +881,7 @@ def extract_callouts(
 
         tokenish = bool(
             re.search(
-                r"(SEE|ITEM|EL\.?|ELEV|STA\.?|CONCRETE|DRAIN|JOINT|LINE|TYP|FOOTING|WALL|GIRDER|PIER|ABUT|REINF|FORM|MATERIAL|GROUND|FLOW|KEYWAY|CROSSING|BRG)",
+                r"(SEE|ITEM|EL\.?|ELEV|STA\.?|CONCRETE|GROUT|DRAIN|JOINT|FILLER|CAULK|SEALER|LINE|TYP|FOOTING|WALL|GIRDER|PIER|ABUT|REINF|FORM|FABRIC|MATERIAL|PATCH|CRACK|VERTICAL|OVERHEAD|GROUND|FLOW|KEYWAY|CROSSING|BRG)",
                 upper,
             )
         )
@@ -578,7 +935,8 @@ def extract_page(
     display_width, display_height = page.rect.width, page.rect.height
     lines = line_text_from_page(page, textpage=textpage)
     segments = collect_line_segments(page)
-    sheet_title = extract_sheet_title(lines, display_width, display_height)
+    sheet_title_info = extract_sheet_title_info(lines, display_width, display_height)
+    sheet_title = sheet_title_info["title"]
     ocr_used = bool((text_info or {}).get("ocr_used"))
     if ocr_used:
         # OCR reliably recovers keyword positions, but its font metrics and the
@@ -614,9 +972,73 @@ def extract_page(
         "display_height": display_height,
         **info,
         "sheet_title": sheet_title,
+        "sheet_title_lines": sheet_title_info["lines"],
+        "sheet_title_bbox": sheet_title_info["bbox"],
+        "sheet_title_bbox_norm": (
+            norm_box(sheet_title_info["bbox"], display_width, display_height)
+            if sheet_title_info["bbox"]
+            else None
+        ),
+        "sheet_title_source": sheet_title_info["source"],
+        "sheet_title_confidence": sheet_title_info["confidence"],
         "drawing_titles": drawing_titles,
         "callouts": callouts,
     }
+
+
+def _harmonize_ocr_sheet_titles(pages: list[dict[str, Any]]) -> None:
+    """Repair obvious OCR-only title subtitle errors using document consensus.
+
+    Many plan sets repeat a location subtitle across multiple sheets, e.g.
+    ``N. GENESEE ST / OVER / MOHAWK RIVER``. If at least two pages agree on a
+    multi-line suffix and an OCR page ends with the same final line but has a
+    shorter/noisy middle, preserve that page's first title line and apply the
+    repeated suffix. Native-text titles are never altered.
+    """
+    suffix_counts: dict[tuple[str, ...], int] = {}
+    suffix_original: dict[tuple[str, ...], tuple[str, ...]] = {}
+    for page in pages:
+        title_lines = [clean_text(value) for value in page.get("sheet_title_lines", []) if clean_text(value)]
+        if len(title_lines) < 3:
+            continue
+        # The first line is normally the sheet-specific subject. Repeated title
+        # location/context appears beneath it.
+        for length in range(2, min(4, len(title_lines) - 1) + 1):
+            suffix = tuple(title_lines[-length:])
+            key = tuple(_compact_label(value) for value in suffix)
+            suffix_counts[key] = suffix_counts.get(key, 0) + 1
+            suffix_original.setdefault(key, suffix)
+
+    repeated = [
+        (len(key), count, key)
+        for key, count in suffix_counts.items()
+        if count >= 2
+    ]
+    if not repeated:
+        return
+    _, _, best_key = max(repeated)
+    best_suffix = list(suffix_original[best_key])
+
+    for page in pages:
+        if not page.get("ocr_used"):
+            continue
+        current = [clean_text(value) for value in page.get("sheet_title_lines", []) if clean_text(value)]
+        if not current or len(current) > len(best_suffix) + 1:
+            continue
+        if tuple(_compact_label(value) for value in current[-len(best_suffix):]) == best_key:
+            continue
+        # Require agreement on the terminal location line before correcting.
+        if _compact_label(current[-1]) != best_key[-1]:
+            continue
+        corrected = [current[0], *best_suffix]
+        page["sheet_title_lines"] = corrected
+        page["sheet_title"] = " / ".join(corrected)
+        page["sheet_title_confidence"] = "medium"
+        page["sheet_title_source"] = (
+            str(page.get("sheet_title_source", "title_block_anchors"))
+            + "+document_consensus"
+        )
+        page["sheet_title_consensus_corrected"] = True
 
 
 def extract_document(doc: fitz.Document, source_name: str) -> dict[str, Any]:
@@ -631,6 +1053,7 @@ def extract_document(doc: fitz.Document, source_name: str) -> dict[str, Any]:
                 text_info=text_info,
             )
         )
+    _harmonize_ocr_sheet_titles(pages)
     return {"file": source_name, "pages": pages}
 
 
@@ -661,7 +1084,14 @@ def _keyword_word_rect(
     token_norm = _normalized_word(str(word[4]))
     keyword_norm = _normalized_word(keyword)
     missing = max(0, len(keyword_norm) - len(token_norm))
-    if missing and token_norm and _token_matches_keyword(token_norm, keyword_norm):
+    # Only extend a box when the PDF text layer lost a rendered glyph. CONC.
+    # is an intentional abbreviation, so highlighting should cover only it.
+    if (
+        missing
+        and token_norm
+        and _token_match_quality(token_norm, keyword_norm)
+        == "recovered one-character text error"
+    ):
         average_char_width = rect.width / max(1, len(token_norm))
         rect.x1 = min(page_rect.x1, rect.x1 + average_char_width * (missing + 0.35))
     return rect
@@ -760,25 +1190,16 @@ def _lines_form_stack(upper: dict[str, Any], lower: dict[str, Any]) -> bool:
     return same_scale and (aligned or overlaps)
 
 
-def _keyword_line_context(
+def _stacked_line_context(
     lines: list[dict[str, Any]],
-    keyword_rect: fitz.Rect,
-    keyword: str,
+    anchor_rect: fitz.Rect,
 ) -> tuple[str, list[float]]:
-    """Return a short stacked callout phrase around a keyword occurrence.
-
-    CAD callouts are often split into separate PDF lines, e.g.
-    ``BULKHEAD PIPE`` above ``WITH CONCRET``. This joins only tightly stacked,
-    aligned lines with similar font sizes.
-    """
-    base = _nearest_text_line(lines, keyword_rect)
+    """Return up to three tightly stacked text lines around an anchor rectangle."""
+    base = _nearest_text_line(lines, anchor_rect)
     if base is None:
-        return keyword, [keyword_rect.x0, keyword_rect.y0, keyword_rect.x1, keyword_rect.y1]
+        return "", [anchor_rect.x0, anchor_rect.y0, anchor_rect.x1, anchor_rect.y1]
 
     selected = [base]
-
-    # Search geometrically rather than taking the previous item in reading order;
-    # engineering sheets contain many unrelated labels at the same Y coordinate.
     while len(selected) < 3:
         top = selected[0]
         candidates = [line for line in lines if line not in selected and _lines_form_stack(line, top)]
@@ -791,7 +1212,7 @@ def _keyword_line_context(
                 abs(top["bbox"][0] - line["bbox"][0]),
             ),
         )
-        if len(candidate["text"]) + sum(len(item["text"]) for item in selected) > 120:
+        if len(candidate["text"]) + sum(len(item["text"]) for item in selected) > 160:
             break
         selected.insert(0, candidate)
 
@@ -807,12 +1228,12 @@ def _keyword_line_context(
                 abs(bottom["bbox"][0] - line["bbox"][0]),
             ),
         )
-        if len(candidate["text"]) + sum(len(item["text"]) for item in selected) > 120:
+        if len(candidate["text"]) + sum(len(item["text"]) for item in selected) > 160:
             break
         selected.append(candidate)
 
     selected.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
-    text = _repair_keyword_text(" ".join(item["text"] for item in selected), keyword)
+    text = clean_text(" ".join(item["text"] for item in selected))
     bbox = [
         min(item["bbox"][0] for item in selected),
         min(item["bbox"][1] for item in selected),
@@ -821,6 +1242,132 @@ def _keyword_line_context(
     ]
     return text, bbox
 
+
+def _keyword_line_context(
+    lines: list[dict[str, Any]],
+    keyword_rect: fitz.Rect,
+    keyword: str,
+) -> tuple[str, list[float]]:
+    text, bbox = _stacked_line_context(lines, keyword_rect)
+    if not text:
+        return keyword, bbox
+    return _repair_keyword_text(text, keyword), bbox
+
+
+
+def _word_records(
+    page: fitz.Page,
+    textpage: fitz.TextPage | None = None,
+    clip: fitz.Rect | None = None,
+) -> list[dict[str, Any]]:
+    words = (
+        page.get_text("words", textpage=textpage, clip=clip)
+        if textpage
+        else page.get_text("words", clip=clip)
+    )
+    records: list[dict[str, Any]] = []
+    for index, word in enumerate(words):
+        records.append(
+            {
+                "rect": fitz.Rect(word[:4]),
+                "text": str(word[4]),
+                "block": int(word[5]) if len(word) > 5 else 0,
+                "line": int(word[6]) if len(word) > 6 else 0,
+                "word": int(word[7]) if len(word) > 7 else index,
+                "index": index,
+            }
+        )
+    records.sort(key=lambda item: (item["block"], item["line"], item["word"], item["rect"].x0))
+    return records
+
+
+def _records_are_adjacent(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    if first["block"] == second["block"]:
+        if first["line"] == second["line"]:
+            return 0 < second["word"] - first["word"] <= 2
+        if second["line"] == first["line"] + 1 and second["word"] <= 2:
+            gap = second["rect"].y0 - first["rect"].y1
+            return gap <= max(first["rect"].height, second["rect"].height) * 1.8
+    return False
+
+
+def _keyword_occurrences(
+    page: fitz.Page,
+    keyword: str,
+    *,
+    textpage: fitz.TextPage | None = None,
+    clip: fitz.Rect | None = None,
+) -> list[dict[str, Any]]:
+    """Find exact/fuzzy single words and contiguous multi-word phrases."""
+    target_tokens = _keyword_tokens(keyword)
+    if not target_tokens:
+        return []
+    records = _word_records(page, textpage=textpage, clip=clip)
+    width = len(target_tokens)
+    occurrences: list[dict[str, Any]] = []
+
+    for index in range(len(records) - width + 1):
+        window = records[index : index + width]
+        if width > 1 and not all(
+            _records_are_adjacent(window[offset], window[offset + 1])
+            for offset in range(width - 1)
+        ):
+            continue
+        if not all(
+            _token_matches_keyword(record["text"], target)
+            for record, target in zip(window, target_tokens)
+        ):
+            continue
+
+        boxes = [_keyword_word_rect(
+            (record["rect"].x0, record["rect"].y0, record["rect"].x1, record["rect"].y1, record["text"]),
+            target,
+            _analysis_rect(page),
+        ) for record, target in zip(window, target_tokens)]
+        union = fitz.Rect(boxes[0])
+        for box in boxes[1:]:
+            union |= box
+        qualities = [
+            _token_match_quality(record["text"], target)
+            for record, target in zip(window, target_tokens)
+        ]
+        if all(quality == "exact" for quality in qualities):
+            match_quality = "exact"
+        elif any(quality == "recognized abbreviation CONC." for quality in qualities):
+            match_quality = "recognized abbreviation CONC."
+        else:
+            match_quality = "recovered one-character text error"
+        occurrences.append(
+            {
+                "keyword": keyword,
+                "boxes": boxes,
+                "bbox": union,
+                "match_quality": match_quality,
+            }
+        )
+
+    unique: list[dict[str, Any]] = []
+    for occurrence in occurrences:
+        if any(
+            _rect_overlap_ratio(occurrence["bbox"], existing["bbox"]) >= 0.80
+            and occurrence["keyword"].casefold() == existing["keyword"].casefold()
+            for existing in unique
+        ):
+            continue
+        unique.append(occurrence)
+    return unique
+
+
+def _occurrence_overlaps(
+    occurrence: dict[str, Any],
+    boxes: list[fitz.Rect],
+    threshold: float = 0.60,
+) -> bool:
+    return any(
+        _rect_overlap_ratio(box, existing) >= threshold
+        for box in occurrence["boxes"]
+        for existing in boxes
+    )
 
 
 def _is_obvious_non_callout(
@@ -877,16 +1424,29 @@ def _find_unclassified_keyword_mentions(
 
 
 
-def highlight_keyword_callouts_bytes(
+def highlight_keywords_callouts_bytes(
     pdf_bytes: bytes,
-    keyword: str = "concrete",
+    keywords: Iterable[str] | str,
     filename: str = "uploaded.pdf",
     include_review_mentions: bool = False,
 ) -> tuple[bytes, dict[str, Any]]:
-    """Highlight exact keyword mentions only inside detected callouts."""
+    """Highlight configured keywords while suppressing known non-555 concrete work."""
+    keyword_list = normalize_keywords(keywords)
+    if not keyword_list:
+        raise ValueError("Provide at least one keyword or phrase.")
+
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages_report: list[dict[str, Any]] = []
-    seen_boxes: set[tuple[int, int, int, int, int]] = set()
+    seen_annotation_boxes: set[tuple[int, int, int, int, int]] = set()
+    counts = {
+        keyword: {
+            "confirmed_callouts": 0,
+            "review_mentions": 0,
+            "excluded_mentions": 0,
+            "highlighted_mentions": 0,
+        }
+        for keyword in keyword_list
+    }
 
     try:
         for page_index, page in enumerate(doc):
@@ -897,115 +1457,296 @@ def highlight_keyword_callouts_bytes(
                 textpage=textpage,
                 text_info=text_info,
             )
-            flagged: list[dict[str, Any]] = []
-
             lines = line_text_from_page(page, textpage=textpage)
-            confirmed_keyword_boxes: list[fitz.Rect] = []
             analysis_box = _analysis_rect(page)
+            confirmed_boxes: list[fitz.Rect] = []
+            excluded_boxes: list[fitz.Rect] = []
+            flagged: list[dict[str, Any]] = []
+            excluded_mentions: list[dict[str, Any]] = []
+            excluded_keys: set[tuple[str, int, int, int, int]] = set()
+
+            def record_excluded(
+                *,
+                keyword: str,
+                text: str,
+                bbox: fitz.Rect | list[float],
+                occurrences: list[dict[str, Any]],
+                terms: list[str],
+                source: str,
+            ) -> None:
+                rect = fitz.Rect(bbox)
+                key = (
+                    keyword.casefold(),
+                    round(rect.x0),
+                    round(rect.y0),
+                    round(rect.x1),
+                    round(rect.y1),
+                )
+                if key in excluded_keys:
+                    return
+                excluded_keys.add(key)
+                keyword_boxes: list[list[float]] = []
+                match_quality = "exact"
+                for occurrence in occurrences:
+                    if occurrence.get("match_quality") != "exact":
+                        match_quality = occurrence.get("match_quality", match_quality)
+                    excluded_boxes.extend(occurrence.get("boxes", []))
+                    for box in occurrence.get("boxes", []):
+                        keyword_boxes.append(
+                            [round(v, 2) for v in (box.x0, box.y0, box.x1, box.y1)]
+                        )
+                excluded_mentions.append(
+                    {
+                        "text": text,
+                        "bbox": [round(v, 2) for v in rect],
+                        "bbox_norm": norm_box(rect, analysis_box.width, analysis_box.height),
+                        "keyword_boxes": keyword_boxes,
+                        "matched_keywords": [keyword],
+                        "match_details": [
+                            {"keyword": keyword, "match_quality": match_quality}
+                        ],
+                        "classification": "excluded non-555 concrete mention",
+                        "exclusion_terms": terms,
+                        "exclusion_reason": "Concrete appears with a known non-Item-555 term",
+                        "source_classification": source,
+                    }
+                )
+                counts[keyword]["excluded_mentions"] += 1
 
             for callout in extracted["callouts"]:
-                if not _text_contains_keyword(callout["text"], keyword):
+                context_text, context_bbox = _stacked_line_context(
+                    lines, fitz.Rect(callout["bbox"])
+                )
+                if not context_text:
+                    context_text, context_bbox = callout["text"], callout["bbox"]
+
+                matched: list[tuple[str, list[dict[str, Any]]]] = []
+                for keyword in keyword_list:
+                    if not _text_contains_keyword(context_text, keyword):
+                        continue
+                    clip = _expanded_rect(context_bbox, analysis_box, margin=4.0)
+                    occurrences = _keyword_occurrences(
+                        page,
+                        keyword,
+                        textpage=textpage,
+                        clip=clip,
+                    )
+                    if occurrences:
+                        matched.append((keyword, occurrences))
+
+                if not matched:
                     continue
+                repaired_text = context_text
+                for keyword, _ in matched:
+                    repaired_text = _repair_keyword_text(repaired_text, keyword)
                 if _is_obvious_non_callout(
-                    callout["text"],
-                    callout["bbox"],
+                    repaired_text,
+                    context_bbox,
                     callout.get("display_bbox", callout["bbox"]),
                     extracted["display_height"],
                     extracted["drawing_titles"],
                 ):
                     continue
 
-                word_boxes = _keyword_boxes_in_callout(
-                    page, callout["bbox"], keyword, textpage=textpage
-                )
+                matched_keywords: list[str] = []
+                match_details: list[dict[str, Any]] = []
                 highlighted_boxes: list[list[float]] = []
-                display_text, display_bbox = (
-                    _keyword_line_context(lines, word_boxes[0], keyword)
-                    if word_boxes
-                    else (callout["text"], callout["bbox"])
-                )
-                for rect in word_boxes:
-                    key = (
-                        page_index,
-                        round(rect.x0 * 2),
-                        round(rect.y0 * 2),
-                        round(rect.x1 * 2),
-                        round(rect.y1 * 2),
+                for keyword, occurrences in matched:
+                    # Latest product rule: CONC. / conc. must always be surfaced,
+                    # including in sheet titles and even when nearby words (for
+                    # example DECK) are on Carol's non-555 exclusion list. Exact
+                    # CONCRETE spellings continue to use the exclusion classifier.
+                    abbreviation_occurrences = [
+                        occurrence
+                        for occurrence in occurrences
+                        if occurrence.get("match_quality")
+                        == "recognized abbreviation CONC."
+                    ]
+                    standard_occurrences = [
+                        occurrence
+                        for occurrence in occurrences
+                        if occurrence.get("match_quality")
+                        != "recognized abbreviation CONC."
+                    ]
+
+                    exclusion_terms = (
+                        _concrete_exclusion_terms(repaired_text)
+                        if _keyword_is_concrete(keyword) and standard_occurrences
+                        else []
                     )
-                    if key in seen_boxes:
+                    if exclusion_terms:
+                        record_excluded(
+                            keyword=keyword,
+                            text=repaired_text,
+                            bbox=context_bbox,
+                            occurrences=standard_occurrences,
+                            terms=exclusion_terms,
+                            source="confirmed callout",
+                        )
+
+                    allowed_occurrences = (
+                        abbreviation_occurrences
+                        if exclusion_terms
+                        else occurrences
+                    )
+                    if not allowed_occurrences:
                         continue
-                    seen_boxes.add(key)
-                    confirmed_keyword_boxes.append(rect)
-                    annotation = page.add_highlight_annot(rect)
-                    annotation.set_info(
-                        title="Concrete callout",
-                        content=display_text,
-                    )
-                    annotation.update()
-                    highlighted_boxes.append([round(v, 2) for v in (rect.x0, rect.y0, rect.x1, rect.y1)])
+
+                    keyword_was_highlighted = False
+                    keyword_quality = "exact"
+                    for occurrence in allowed_occurrences:
+                        if occurrence["match_quality"] != "exact":
+                            keyword_quality = occurrence["match_quality"]
+                        confirmed_boxes.extend(occurrence["boxes"])
+                        for rect in occurrence["boxes"]:
+                            key = (
+                                page_index,
+                                round(rect.x0 * 2),
+                                round(rect.y0 * 2),
+                                round(rect.x1 * 2),
+                                round(rect.y1 * 2),
+                            )
+                            if key in seen_annotation_boxes:
+                                continue
+                            seen_annotation_boxes.add(key)
+                            annotation = page.add_highlight_annot(rect)
+                            annotation.set_info(
+                                title=f"{keyword} callout",
+                                content=repaired_text,
+                            )
+                            annotation.update()
+                            highlighted_boxes.append(
+                                [round(v, 2) for v in (rect.x0, rect.y0, rect.x1, rect.y1)]
+                            )
+                            keyword_was_highlighted = True
+                    if keyword_was_highlighted:
+                        matched_keywords.append(keyword)
+                        match_details.append(
+                            {"keyword": keyword, "match_quality": keyword_quality}
+                        )
+                        counts[keyword]["confirmed_callouts"] += 1
+                        counts[keyword]["highlighted_mentions"] += 1
 
                 if highlighted_boxes:
                     flagged.append(
                         {
-                            "text": display_text,
-                            "bbox": [round(v, 2) for v in display_bbox],
+                            "text": repaired_text,
+                            "bbox": [round(v, 2) for v in context_bbox],
                             "bbox_norm": norm_box(
-                                display_bbox, analysis_box.width, analysis_box.height
+                                context_bbox, analysis_box.width, analysis_box.height
                             ),
                             "keyword_boxes": highlighted_boxes,
+                            "matched_keywords": matched_keywords,
+                            "match_details": match_details,
                             "classification": "confirmed callout",
-                            "match_quality": (
-                                "exact"
-                                if re.search(rf"\b{re.escape(keyword)}\b", callout["text"], re.I)
-                                else "recovered one-character text error"
-                            ),
                         }
                     )
 
-            review_mentions = _find_unclassified_keyword_mentions(
-                page,
-                keyword,
-                lines,
-                confirmed_keyword_boxes,
-                textpage=textpage,
-            )
+            review_mentions: list[dict[str, Any]] = []
+            for keyword in keyword_list:
+                for occurrence in _keyword_occurrences(
+                    page,
+                    keyword,
+                    textpage=textpage,
+                ):
+                    if _occurrence_overlaps(occurrence, confirmed_boxes + excluded_boxes):
+                        continue
+                    # Use stacked local context so exclusions split across two CAD text
+                    # lines (for example CONCRETE on one line and CURB on the next)
+                    # are still evaluated as one callout phrase.
+                    context_text, context_bbox = _stacked_line_context(
+                        lines, occurrence["bbox"]
+                    )
+                    if not context_text:
+                        context_text, context_bbox = _keyword_line_context(
+                            lines, occurrence["bbox"], keyword
+                        )
+                    repaired_text = _repair_keyword_text(context_text, keyword)
+                    # CONC. / conc. is an explicit always-highlight alias.
+                    # Do not suppress it via the non-555 exclusion list.
+                    is_conc_abbreviation = (
+                        occurrence.get("match_quality")
+                        == "recognized abbreviation CONC."
+                    )
+                    exclusion_terms = (
+                        _concrete_exclusion_terms(repaired_text)
+                        if _keyword_is_concrete(keyword) and not is_conc_abbreviation
+                        else []
+                    )
+                    if exclusion_terms:
+                        record_excluded(
+                            keyword=keyword,
+                            text=repaired_text,
+                            bbox=context_bbox,
+                            occurrences=[occurrence],
+                            terms=exclusion_terms,
+                            source="review mention",
+                        )
+                        continue
+
+                    review_mentions.append(
+                        {
+                            "text": repaired_text,
+                            "bbox": [round(v, 2) for v in context_bbox],
+                            "bbox_norm": norm_box(
+                                context_bbox, analysis_box.width, analysis_box.height
+                            ),
+                            "keyword_boxes": [
+                                [round(v, 2) for v in (box.x0, box.y0, box.x1, box.y1)]
+                                for box in occurrence["boxes"]
+                            ],
+                            "matched_keywords": [keyword],
+                            "match_details": [
+                                {
+                                    "keyword": keyword,
+                                    "match_quality": occurrence["match_quality"],
+                                }
+                            ],
+                            "classification": "review mention",
+                        }
+                    )
+                    counts[keyword]["review_mentions"] += 1
 
             if include_review_mentions:
                 grouped_review: dict[tuple[str, int, int, int, int], dict[str, Any]] = {}
                 for mention in review_mentions:
-                    rect = fitz.Rect(mention["keyword_box"])
-                    key = (
-                        page_index,
-                        round(rect.x0 * 2),
-                        round(rect.y0 * 2),
-                        round(rect.x1 * 2),
-                        round(rect.y1 * 2),
-                    )
-                    if key in seen_boxes:
+                    keyword = mention["matched_keywords"][0]
+                    any_new_box = False
+                    for raw_box in mention["keyword_boxes"]:
+                        rect = fitz.Rect(raw_box)
+                        key = (
+                            page_index,
+                            round(rect.x0 * 2),
+                            round(rect.y0 * 2),
+                            round(rect.x1 * 2),
+                            round(rect.y1 * 2),
+                        )
+                        if key in seen_annotation_boxes:
+                            continue
+                        seen_annotation_boxes.add(key)
+                        annotation = page.add_highlight_annot(rect)
+                        annotation.set_info(
+                            title=f"{keyword} mention — review",
+                            content=mention["text"],
+                        )
+                        annotation.update()
+                        any_new_box = True
+                    if not any_new_box:
                         continue
-                    seen_boxes.add(key)
-                    annotation = page.add_highlight_annot(rect)
-                    annotation.set_info(
-                        title="Concrete mention — review",
-                        content=mention["text"],
-                    )
-                    annotation.update()
                     box = mention["bbox"]
                     group_key = (
                         mention["text"],
                         round(box[0]), round(box[1]), round(box[2]), round(box[3]),
                     )
-                    grouped_review.setdefault(
-                        group_key,
-                        {
-                            "text": mention["text"],
-                            "bbox": box,
-                            "bbox_norm": norm_box(box, analysis_box.width, analysis_box.height),
-                            "keyword_boxes": [],
-                            "classification": "review mention",
-                        },
-                    )
-                    grouped_review[group_key]["keyword_boxes"].append(mention["keyword_box"])
+                    if group_key not in grouped_review:
+                        grouped_review[group_key] = dict(mention)
+                    else:
+                        grouped = grouped_review[group_key]
+                        if keyword not in grouped["matched_keywords"]:
+                            grouped["matched_keywords"].append(keyword)
+                            grouped["match_details"].extend(mention["match_details"])
+                            grouped["keyword_boxes"].extend(mention["keyword_boxes"])
+                    counts[keyword]["highlighted_mentions"] += 1
                 flagged.extend(grouped_review.values())
 
             pages_report.append(
@@ -1019,19 +1760,28 @@ def highlight_keyword_callouts_bytes(
                     "ocr_error": extracted.get("ocr_error"),
                     "rotation": extracted["rotation"],
                     "sheet_title": extracted["sheet_title"],
+                    "sheet_title_lines": extracted.get("sheet_title_lines", []),
+                    "sheet_title_bbox": extracted.get("sheet_title_bbox"),
+                    "sheet_title_bbox_norm": extracted.get("sheet_title_bbox_norm"),
+                    "sheet_title_source": extracted.get("sheet_title_source"),
+                    "sheet_title_confidence": extracted.get("sheet_title_confidence"),
+                    "sheet_title_consensus_corrected": False,
                     "drawing_titles": [item["text"] for item in extracted["drawing_titles"]],
                     "flagged_callouts": flagged,
                     "other_keyword_mentions": review_mentions,
+                    "excluded_non_555_mentions": excluded_mentions,
                 }
             )
 
+        _harmonize_ocr_sheet_titles(pages_report)
         output_bytes = doc.tobytes(garbage=4, deflate=True)
     finally:
         doc.close()
 
     report = {
         "file": filename,
-        "keyword": keyword,
+        "keywords": keyword_list,
+        "concrete_non_555_exclusions": CONCRETE_NON_555_EXCLUSIONS,
         "total_pages": len(pages_report),
         "pages_analyzed": sum(
             1 for page in pages_report if page.get("analysis_status") != "limited: OCR unavailable"
@@ -1043,24 +1793,50 @@ def highlight_keyword_callouts_bytes(
             if page.get("analysis_status") == "limited: OCR unavailable"
         ],
         "total_flagged_callouts": sum(
-            sum(1 for item in page["flagged_callouts"] if item.get("classification") == "confirmed callout")
+            sum(
+                1 for item in page["flagged_callouts"]
+                if item.get("classification") == "confirmed callout"
+            )
             for page in pages_report
         ),
         "total_review_mentions": sum(
             len(page.get("other_keyword_mentions", [])) for page in pages_report
         ),
+        "total_excluded_non_555_mentions": sum(
+            len(page.get("excluded_non_555_mentions", [])) for page in pages_report
+        ),
+        "total_highlighted_mentions": sum(
+            len(page.get("flagged_callouts", [])) for page in pages_report
+        ),
         "total_recovered_matches": sum(
             sum(
                 1
                 for item in page.get("flagged_callouts", [])
-                if item.get("match_quality") == "recovered one-character text error"
+                for detail in item.get("match_details", [])
+                if detail.get("match_quality") == "recovered one-character text error"
             )
             for page in pages_report
         ),
+        "keyword_counts": counts,
         "include_review_mentions": include_review_mentions,
         "pages": pages_report,
     }
     return output_bytes, report
+
+
+def highlight_keyword_callouts_bytes(
+    pdf_bytes: bytes,
+    keyword: str = "concrete",
+    filename: str = "uploaded.pdf",
+    include_review_mentions: bool = False,
+) -> tuple[bytes, dict[str, Any]]:
+    """Backward-compatible single-keyword wrapper."""
+    return highlight_keywords_callouts_bytes(
+        pdf_bytes,
+        [keyword],
+        filename=filename,
+        include_review_mentions=include_review_mentions,
+    )
 
 
 def render_pdf_page_bytes(pdf_bytes: bytes, page_number: int, zoom: float = 1.35) -> bytes:

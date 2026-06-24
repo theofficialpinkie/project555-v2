@@ -1,11 +1,13 @@
 from fastapi import FastAPI
+import gradio as gr
 
-app = FastAPI()
+from gradio_app import APP_CSS, app as gradio_blocks
 
+fastapi_app = FastAPI()
 
-@app.get("/")
-def home():
-    return {
-        "status": "success",
-        "message": "Concrete Callout Review API is running"
-    }
+app = gr.mount_gradio_app(
+    fastapi_app,
+    gradio_blocks,
+    path="/",
+    css=APP_CSS,
+)
