@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ DEFAULT_KEYWORDS = [
     "Form",
     "Forms",
     "Crack Repairs",
+    "Cast in Place",
+    "CIP.",
 ]
 
 APP_CSS = """
@@ -103,6 +106,18 @@ def _status_text(item: dict[str, Any]) -> str:
         status += " · text repaired"
     if "recognized abbreviation CONC." in qualities:
         status += " · CONC. = Concrete"
+
+    evidence = item.get("cross_sheet_item_555") or {}
+    if evidence:
+        item_pages = evidence.get("item_555_pages", [])
+        related_pages = evidence.get("related_pages", [])
+        if item_pages:
+            status += " · Item 555 on related page(s) " + ", ".join(map(str, item_pages))
+        else:
+            status += " · no Item 555 found across related page(s) " + ", ".join(map(str, related_pages))
+        overridden = item.get("overridden_exclusions", [])
+        if overridden:
+            status += " · overrode: " + ", ".join(overridden)
     return status
 
 
@@ -150,24 +165,36 @@ def _sheet_rows(report: dict[str, Any]) -> list[list[Any]]:
 
 def _summary_html(report: dict[str, Any]) -> str:
     findings = [item for page in report["pages"] for item in page.get("flagged_callouts", [])]
-    confirmed = sum(1 for item in findings if item.get("classification") == "confirmed callout")
+    confirmed = sum(
+        1
+        for item in findings
+        if item.get("classification")
+        in {"confirmed callout", "cross-sheet Item 555 override", "cross-sheet missing Item 555"}
+    )
     review = sum(1 for item in findings if item.get("classification") == "review mention")
+    cross_sheet = report.get("total_cross_sheet_item_555_overrides", 0) + report.get("total_cross_sheet_missing_item_555", 0)
     excluded = report.get("total_excluded_non_555_mentions", 0)
     no_flag_pages = sum(1 for page in report["pages"] if not page.get("flagged_callouts"))
     pages_analyzed = report.get("pages_analyzed", len(report["pages"]))
     total_pages = report.get("total_pages", len(report["pages"]))
     ocr_pages = report.get("ocr_pages", [])
+    unresolved = report.get("total_unresolved_keyword_occurrences", 0)
 
     ocr_note = f" OCR was used on page(s) {', '.join(map(str, ocr_pages))}." if ocr_pages else ""
+    coverage_note = (
+        " Keyword coverage check passed: every detected configured-keyword occurrence was classified."
+        if unresolved == 0
+        else f" Warning: {unresolved} detected keyword occurrence(s) remain unresolved."
+    )
     return f"""
     <div class="kpi-grid">
       <div class="kpi-card"><div class="kpi-value">{pages_analyzed}/{total_pages}</div><div class="kpi-label">Pages analyzed</div></div>
       <div class="kpi-card"><div class="kpi-value">{confirmed}</div><div class="kpi-label">Confirmed callouts</div></div>
       <div class="kpi-card"><div class="kpi-value">{review}</div><div class="kpi-label">Review mentions</div></div>
       <div class="kpi-card"><div class="kpi-value">{excluded}</div><div class="kpi-label">Not flagged by rules</div></div>
-      <div class="kpi-card"><div class="kpi-value">{no_flag_pages}</div><div class="kpi-label">Pages with no flagged result</div></div>
+      <div class="kpi-card"><div class="kpi-value">{cross_sheet}</div><div class="kpi-label">Cross-sheet 555 findings</div></div>
     </div>
-    <div class="review-note"><strong>Review flow:</strong> Scan the full highlighted plan below, then use the tabs in order: <em>Sheet Titles</em>, <em>All Flagged</em>, and <em>Not Flagged by Rules</em>. Every finding already includes its page number.{ocr_note}</div>
+    <div class="review-note"><strong>Review flow:</strong> Scan the full highlighted plan below, then use the tabs in order: <em>Sheet Titles</em>, <em>All Flagged</em>, and <em>Not Flagged by Rules</em>. Cross-sheet findings show whether Item 555 was found on a related sheet or is missing across the repeated title family. Every finding includes its page number.{ocr_note}{coverage_note}</div>
     """
 
 
@@ -310,5 +337,21 @@ def build_app() -> gr.Blocks:
 
 app = build_app()
 
+
+def launch_app() -> None:
+    """Launch locally or on a hosted container/Space."""
+    username = os.getenv("APP_USERNAME")
+    password = os.getenv("APP_PASSWORD")
+    auth = (username, password) if username and password else None
+
+    app.queue(default_concurrency_limit=1, max_size=10).launch(
+        server_name=os.getenv("GRADIO_SERVER_NAME", "0.0.0.0"),
+        server_port=int(os.getenv("PORT", "7860")),
+        css=APP_CSS,
+        auth=auth,
+        show_error=True,
+    )
+
+
 if __name__ == "__main__":
-    app.launch(css=APP_CSS)
+    launch_app()

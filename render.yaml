@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: plan-material-callout-review
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: 7860

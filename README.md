@@ -1,39 +1,50 @@
-# Concrete Callout Review MVP
+---
+title: Plan Material Callout Review
+emoji: 📐
+colorFrom: blue
+colorTo: yellow
+sdk: gradio
+app_file: gradio_app.py
+python_version: "3.12"
+pinned: false
+---
 
-A small Gradio web app for contract-plan PDFs.
+# Plan Material Callout Review — v19
 
-## Workflow
+Deployment-ready version of the contract-plan PDF review MVP.
 
-1. Upload a PDF.
-2. The app detects callouts associated with leader/detail lines.
-3. It filters those callouts to ones containing **concrete**.
-4. It highlights the exact word **concrete** on the plan.
-5. Review the flagged pages and callout list, then download the highlighted PDF.
+## Recommended hosting: Hugging Face Spaces
 
-## Run locally
+This repository is ready for a **Gradio Space**. Hugging Face will:
+
+- run `gradio_app.py`;
+- install Python dependencies from `requirements.txt`;
+- install Tesseract OCR from `packages.txt`;
+- rebuild automatically after each push.
+
+### Optional password
+
+Set both of these Space secrets to require a login:
+
+- `APP_USERNAME`
+- `APP_PASSWORD`
+
+If neither is set, the app is publicly accessible.
+
+## Alternative hosting: Render
+
+The included `Dockerfile` and `render.yaml` make the same repository deployable as a Render Docker web service.
+
+## Local use
 
 ```bash
-cd contract_plan_concrete_mvp
-python -m venv .venv
-source .venv/bin/activate       # Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
-python app.py
+./.venv/bin/python3 gradio_app.py
 ```
 
-Open the local URL printed in the terminal.
+The app listens on `0.0.0.0` and uses the `PORT` environment variable, defaulting to `7860`.
 
-## Extractor CLI
+## Regression tests
 
 ```bash
-python pdf_plan_extractor.py input.pdf \
-  -o extracted_plan_data.json \
-  --csv extracted_plan_data.csv \
-  --highlight-keyword concrete \
-  --highlight-dir highlighted
+./.venv/bin/python3 regression_test.py
 ```
-
-## Notes
-
-- Best results come from text-based/vector PDFs.
-- Raster-only scans need an OCR fallback.
-- The highlighter intentionally ignores ordinary title-block/table text unless it is also detected as a leader-line callout.
